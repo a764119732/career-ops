@@ -34,6 +34,7 @@ import { resolveTrackerPath, resolveWorkspaceRoot, resolvePdfIndexPath, trackerL
 // Canonical posting-URL key. Kept in its own module so scan.mjs / scan-history
 // can adopt the same key later without the definitions drifting.
 import { normalizeUrl } from './url-key.mjs';
+import { ensureJevShadowInReport } from './jev-shadow-runner.mjs';
 
 const MERGE_TRACKER_HELP_REQUESTED = process.argv.includes('--help') || process.argv.includes('-h');
 if (MERGE_TRACKER_HELP_REQUESTED) {
@@ -236,6 +237,18 @@ function extractReportNum(reportStr, notesStr = '') {
   return n ? parseInt(n[1]) : null;
 }
 
+/** Resolve an existing linked report while keeping the path inside the workspace. */
+function resolveReportPath(reportField) {
+  const linkMatch = (reportField || '').match(/\]\(([^)]+)\)/);
+  if (!linkMatch) return null;
+  // Containment, not cosmetics: resolve and assert the path stays under
+  // REPORTS_ROOT. Stripping leading `../` alone still let an embedded
+  // `reports/../../..` walk out of the tree, and the tracker is user-editable.
+  const reportPath = resolve(REPORTS_ROOT, linkMatch[1].trim().replace(/^(\.\.\/)+/, ''));
+  if (!reportPath.startsWith(REPORTS_ROOT + sep)) return null;
+  return existsSync(reportPath) ? reportPath : null;
+}
+
 /**
  * Derive a posting URL from a row's linked report (`**URL:**` header).
  *
@@ -251,14 +264,8 @@ function extractReportNum(reportStr, notesStr = '') {
  *   it is empty, so the backfill can report the two cases separately.
  */
 function resolveReportUrl(reportField) {
-  const linkMatch = (reportField || '').match(/\]\(([^)]+)\)/);
-  if (!linkMatch) return { url: '', reason: 'no-report' };
-  // Containment, not cosmetics: resolve and assert the path stays under
-  // REPORTS_ROOT. Stripping leading `../` alone still let an embedded
-  // `reports/../../..` walk out of the tree, and the tracker is user-editable.
-  const reportPath = resolve(REPORTS_ROOT, linkMatch[1].trim().replace(/^(\.\.\/)+/, ''));
-  if (!reportPath.startsWith(REPORTS_ROOT + sep)) return { url: '', reason: 'no-report' };
-  if (!existsSync(reportPath)) return { url: '', reason: 'no-report' };
+  const reportPath = resolveReportPath(reportField);
+  if (!reportPath) return { url: '', reason: 'no-report' };
   // [ \t]* NOT \s*: \s matches newlines, so an empty `**URL:**` header swallowed
   // the line break and captured the NEXT header's text. Every such report then
   // minted the same bogus key (`**Legitimacy:**`), and the backfill counted it
@@ -1327,6 +1334,7 @@ const newLines = [];
 // of merged/ so a re-run picks them up, and they make the process exit non-zero
 // instead of reporting a success that did not happen.
 const failedAdditions = [];
+const shadowReports = new Map();
 
 /**
  * Replace one tracker row line wherever it currently lives.
@@ -1390,6 +1398,14 @@ for (const file of tsvFiles) {
   // would populate the column while leaving Pass 0 nothing to match on, which is
   // the original bug with extra steps.
   if (!addition.url) addition.url = resolveReportUrl(addition.report).url;
+  const shadowReport = resolveReportPath(addition.report);
+  if (shadowReport) {
+    shadowReports.set(shadowReport, {
+      company: addition.company,
+      title: addition.role,
+      source_url: addition.url || null,
+    });
+  }
 
   // Check for duplicate by:
   // 0. Exact normalized posting URL (deterministic, authoritative)
@@ -1808,6 +1824,19 @@ if (!DRY_RUN) {
 console.log(`\n📊 Summary: +${added} added, 🔄${updated} updated, ⏭️${skipped} skipped${failedAdditions.length ? `, ❌${failedAdditions.length} NOT merged` : ''}`);
 if (DRY_RUN) console.log('(dry-run — no changes written)');
 trackerLock.release();
+
+// Persistence fallback for free-form Agent/headless evaluators. The preferred
+// call happens before A-G; this guarantees a report still gets an isolated
+// shadow block if an agent skipped that instruction. Never blocks the merge.
+if (!DRY_RUN) {
+  for (const [reportPath, metadata] of shadowReports) {
+    try {
+      await ensureJevShadowInReport(reportPath, metadata);
+    } catch (error) {
+      console.warn(`⚠️  Jev shadow unavailable for ${basename(reportPath)}: ${error.message}`);
+    }
+  }
+}
 
 // Sync PDF flags (idempotent; uses its own lock/transaction)
 if (!DRY_RUN) {

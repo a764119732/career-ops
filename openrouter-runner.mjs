@@ -35,6 +35,8 @@ import { appendToPipeline, appendToScanHistory } from './scan.mjs';
 import { localToday } from './lib/local-today.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { formatJevShadowMarkdown } from './jev-shadow.mjs';
+import { collectEvaluationShadow } from './jev-shadow-runner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const tracker = new TokenAccumulator();
@@ -645,7 +647,7 @@ async function cmdScan() {
 }
 
 // -- EVALUATE --
-async function cmdEvaluate(input, ctx) {
+async function cmdEvaluate(input, ctx, jobMeta = {}) {
   tracker.recordZeroToken('scan');
   tracker.recordZeroToken('pdf payload');
   const modeContent = readFile('modes/oferta.md') ?? readFile('modes/auto-pipeline.md') ?? '';
@@ -677,6 +679,28 @@ async function cmdEvaluate(input, ctx) {
       return null;
     }
   }
+
+  const isUrlInput = typeof input === 'string' && input.startsWith('http');
+  const { signal: jevShadow } = await collectEvaluationShadow({
+    job: {
+      company: jobMeta.company ?? null,
+      title: jobMeta.title ?? null,
+      structured_location: jobMeta.structuredLocation ?? null,
+      source_url: isUrlInput ? input : null,
+      jd_text: jdText,
+      extraction: {
+        source: isUrlInput ? 'openrouter-runner' : 'pasted_text',
+        complete: !isUrlInput || jdText.length < 16_000,
+        truncated: isUrlInput && jdText.length >= 16_000,
+        liveness: isUrlInput ? 'unverified' : 'not_applicable',
+      },
+    },
+    deterministic_checks: {
+      jd_available: true,
+      existing_entrypoint_gates_passed: true,
+    },
+  });
+  const jevShadowMarkdown = formatJevShadowMarkdown(jevShadow);
 
   console.log('\nEvaluating...');
   const systemPrompt = buildSystemPrompt(modeContent, ctx);
@@ -713,7 +737,7 @@ async function cmdEvaluate(input, ctx) {
     // Extract Legitimacy from LLM output or fall back to placeholder
     const legitMatch = result.match(/\*\*Legitimacy:\*\*\s*([^\n]+)/);
     const legitLine  = legitMatch ? `**Legitimacy:** ${legitMatch[1].trim()}` : '**Legitimacy:** unconfirmed';
-    writeFile(relPath, `**URL:** ${input || '(pasted)'}\n${legitLine}\n\n${result}`);
+    writeFile(relPath, `**URL:** ${input || '(pasted)'}\n${legitLine}\n\n${result}\n\n${jevShadowMarkdown}\n`);
 
     const scoreMatch  = result.match(/(?:score|puntuaci[oó]n)[^\d]*(\d+\.?\d*)/i);
     const scoreValue  = scoreMatch ? parseFloat(scoreMatch[1]) : NaN;
@@ -758,7 +782,7 @@ async function cmdPipeline(ctx) {
     const item = pending[i];
     console.log(`\n[${i + 1}/${pending.length}] ${item.company} — ${item.role}`);
     try {
-      const report = await cmdEvaluate(item.url, ctx);
+      const report = await cmdEvaluate(item.url, ctx, { company: item.company, title: item.role });
       if (report) markPipelineDone(item.url);
     } catch (e) {
       console.error(`  Error: ${e.message}`);

@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveCli } from "@/lib/clis";
-import { accumulateTokens, hasNewCompletedReport, isFatalGenericStderr, killMsForKind, timeoutMessage } from "@/lib/run-cli-support.mjs";
+import { accumulateTokens, completedReportNames, isFatalGenericStderr, killMsForKind, timeoutMessage } from "@/lib/run-cli-support.mjs";
 import { spawnHeadlessCli } from "@/lib/spawn-cli.mjs";
 import { careerOpsRoot, readMemory, findReportFile, readInbox, readScanDates, readLanguageConfig } from "@/lib/career-ops";
 import { resolvePdfPaths, type PdfPaths } from "@/lib/pdf-paths.mjs";
@@ -402,7 +402,7 @@ export async function POST(req: Request) {
       };
 
       child.on("error", (e) => { send({ type: "error", msg: e.message }); close(); });
-      child.on("close", (code) => {
+      child.on("close", async (code) => {
         // A trailing line with no newline would otherwise never be tested.
         if (stderrBuf) { flagStderrLine(stderrBuf); stderrBuf = ""; }
         // A client disconnect can fire cancel() (which kills `child`) before
@@ -484,7 +484,20 @@ export async function POST(req: Request) {
           return close();
         }
 
-        const wroteReport = hasNewCompletedReport(reportsBefore, reportEntries());
+        const completedBefore = completedReportNames(reportsBefore);
+        const newReports = [...completedReportNames(reportEntries())]
+          .filter((name) => !completedBefore.has(name));
+        const wroteReport = newReports.length > 0;
+        if (persists && wroteReport) {
+          await Promise.all(newReports.map((name) => new Promise<void>((resolveDone) => {
+            const finalizer = spawn(process.execPath, [
+              path.join(careerOpsRoot(), "jev-shadow-runner.mjs"),
+              "--report", path.join(reportsDir, name),
+            ], { cwd: careerOpsRoot(), env: process.env, stdio: "ignore" });
+            finalizer.once("error", () => resolveDone());
+            finalizer.once("close", () => resolveDone());
+          })));
+        }
         // Honesty gate (#9): a green "done" with a parsed score requires a CLEAN exit,
         // real output, AND (for evaluations) a report actually written. Anything else
         // is surfaced — an errored run must never be banked as a confident score.

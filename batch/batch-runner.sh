@@ -741,6 +741,8 @@ process_offer() {
   # could pre-create it as a symlink and redirect or clobber the write.
   local jd_file
   jd_file="$(mktemp "${TMPDIR:-/tmp}/batch-jd-${id}.XXXXXX")"
+  local jev_shadow_file
+  jev_shadow_file="$(mktemp "${TMPDIR:-/tmp}/batch-jev-${id}.XXXXXX")"
 
   # Pre-populate $jd_file with a static curl fetch so the worker reads HTML
   # directly instead of always falling through to WebFetch (#2492). WebFetch is
@@ -857,6 +859,15 @@ process_offer() {
       fi
   fi
 
+  local jd_complete=false
+  if [[ "$jd_prefetch_words" -ge "$prefetch_min_words" ]]; then
+    jd_complete=true
+  fi
+  node "$PROJECT_DIR/jev-shadow-runner.mjs" \
+    --jd-file "$jd_file" --url "$url" --source "batch_prefetch" \
+    --complete "$jd_complete" --truncated false --liveness unverified \
+    --output "$jev_shadow_file" >/dev/null 2>&1 || true
+
   echo "--- Processing offer #$id: $url (report $report_num, attempt $((retries + 1)))"
 
   # Build the prompt with placeholders replaced
@@ -871,6 +882,7 @@ process_offer() {
   prompt="$prompt JD file: $jd_file"
   prompt="$prompt Report number: $report_num"
   prompt="$prompt Date: $date"
+  prompt="$prompt Jev shadow JSON: $jev_shadow_file. After deterministic gates and before A-G, preserve it as the report's ## Jev Signals (shadow) block; unavailable never stops evaluation."
   prompt="$prompt Batch ID: $id"
 
   local log_file="$LOGS_DIR/${report_num}-${id}.log"
@@ -1048,6 +1060,7 @@ process_offer() {
       update_state_retrying "$id" "$url" "failed" "$started_at" "$completed_at" "$report_num" "-" "$worker_error_match" "$retries" || true
       release_report_num "$report_num"
       echo "    ❌ Failed (worker-reported, attempt $retries): $worker_error_match"
+      rm -f "$jev_shadow_file"
       return 0
     fi
 
@@ -1065,8 +1078,15 @@ process_offer() {
       update_state_retrying "$id" "$url" "failed" "$started_at" "$completed_at" "$report_num" "-" "worker exited cleanly but wrote no report file for this report number" "$retries" || true
       release_report_num "$report_num"
       echo "    ❌ Failed (no report file on disk, attempt $retries)"
+      rm -f "$jev_shadow_file"
       return 0
     fi
+
+    local report_path
+    report_path=$(compgen -G "$REPORTS_DIR/${report_num}-*.md" | head -n 1)
+    node "$PROJECT_DIR/jev-shadow-runner.mjs" --attach-report "$report_path" \
+      --signal-file "$jev_shadow_file" >/dev/null 2>&1 || true
+    rm -f "$jev_shadow_file"
 
     # Check min-score gate
     if is_decimal_number "$score" && awk -v min="$MIN_SCORE" 'BEGIN{exit !(min > 0)}'; then
@@ -1091,6 +1111,7 @@ process_offer() {
     release_report_num "$report_num"
     echo "    ❌ Failed (attempt $retries, exit code $exit_code)"
   fi
+  rm -f "$jev_shadow_file"
 }
 
 # Merge tracker additions into applications.md

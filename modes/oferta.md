@@ -26,6 +26,12 @@ If `data/blacklist.md` exists, check the posting's company against it before Blo
 2. Wait for an explicit answer — never silently refuse, never silently proceed. The candidate's call always wins (same HITL spirit as the score < 4.0 rule): an explicit yes runs the full A-G evaluation as normal (note the override in the report notes); anything else stops here with no evaluation, report, or CV.
 3. No match, or no `data/blacklist.md` → proceed. A blacklist entry never changes any score anywhere — it is a gate, not a signal.
 
+## Jev shadow checkpoint
+
+After the complete JD is available and the liveness, blacklist, and duplicate gates pass, but before Step 0 or Block A, create a temporary job envelope and run `node jev-shadow-runner.mjs --input {temporary-json-path} --markdown`. The envelope contains only job metadata, the complete JD, extraction facts, and deterministic checks; never copy candidate facts into it because the adapter loads `cv.md`, `config/profile.yml`, and `modes/_profile.md` itself. Delete the envelope immediately.
+
+Save stdout verbatim as `## Jev Signals (shadow)` outside `## Machine Summary`. A `jev_unavailable` result never changes or blocks A-G, routing, state, CV, or application behavior. The merge layer also finalizes a missing shadow block as a code-level fallback.
+
 ## Bounded Research Budget
 
 Company, compensation, and hiring-signal research must be a single-pass lookup, not an open-ended investigation. This mode is an evaluation workflow, not deep company research.
