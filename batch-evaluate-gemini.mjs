@@ -83,7 +83,7 @@ function setupEnvironment() {
   const genAI = new GoogleGenerativeAI(apiKey);
   model = genAI.getGenerativeModel({
     model: modelName,
-    generationConfig: { temperature: 0.4, maxOutputTokens: 8192 },
+    generationConfig: { maxOutputTokens: 8192 },
   });
 } // GitHub diff trigger for bot outdate
 
